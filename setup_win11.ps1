@@ -243,6 +243,26 @@ function Install-PackageManager {
 
 
 # ==========================================
+# 模块九：每日服务器健康监控广播
+# ==========================================
+function Install-DailyReport {
+    Write-Color "`n[10/10] 正在挂载 Gotify 每日定时监控报告生态..." "Yellow"
+    try {
+        $DailyReportPath = Join-Path -Path $PSScriptRoot -ChildPath "dailyreport.ps1"
+        if (Test-Path $DailyReportPath) {
+            & $DailyReportPath -Install | Out-Null
+            Write-Color " -> Gotify 监控端已成功驻留！任务引擎接管偶数时段扫描。" "Green"
+        } else {
+            Write-Color " -> [提示] 未检测到 dailyreport.ps1 伴随安装包，将跳过其部署。" "Cyan"
+        }
+    } catch {
+        Write-Color " -> [异常] 部署 Gotify 服务端节点失败: $_" "Red"
+        $global:ErrorsFound = $true
+    }
+}
+
+
+# ==========================================
 # 结尾模块：系统环境基准自检
 # ==========================================
 function Verify-SystemHealth {
@@ -295,10 +315,11 @@ function Main {
     Write-Color "==========================================================" "Cyan"
     Write-Color "     Windows 11 无头自动部署基建包     " "Cyan"
     Write-Color "==========================================================" "Cyan"
-    Write-Color "本引擎已被扩容至 9 个流水环节，火力全开自动部署：" "Yellow"
+    Write-Color "本引擎已被扩容至 10 个流水环节，火力全开自动部署：" "Yellow"
     Write-Color " [1~3] 部署核心级 OpenSSH、优化控制端、挂载超管账户" "Yellow"
     Write-Color " [4~6] 无痕拆毁防火墙、永恒禁止休眠掉线、开通强直连 RDP" "Yellow"
     Write-Color " [7~9] 强杀 Defender、根除所有 UAC 及休眠干扰、预装 Choco" "Yellow"
+    Write-Color " [10]  静默灌入 Gotify 每日健康状态汇报监控程序" "Yellow"
     
     # 授权启动
     Write-Color "==========================================================" "Cyan"
@@ -314,6 +335,7 @@ function Main {
     Disable-WindowsDefender
     Optimize-SystemDebloat
     Install-PackageManager
+    Install-DailyReport
     
     # 收尾
     $checkFailed = Verify-SystemHealth
