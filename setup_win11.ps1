@@ -1,4 +1,19 @@
-#Requires -RunAsAdministrator
+﻿# 强制设定当前控制台输出为 UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# 自动提权机制 (免去右键管理员运行，防止因权限或执行策略拦截导致的闪退)
+$isAdmin = [bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    try {
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        Start-Process powershell -Verb RunAs -ArgumentList $arguments
+    } catch {
+        Write-Host "提示：提权操作被取消或失败。请按任意键退出..."
+        $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+    }
+    exit
+}
 
 <#
 .SYNOPSIS
@@ -360,9 +375,9 @@ function Main {
     } else {
         Write-Color " 【完成】 基建部署结束，请接管机器！" "Green"
         Write-Color " ----------------------------------------------------" "Cyan"
-        Write-Color " 💻 Coder 控制台接入：" "Green"
+        Write-Color " [+] Coder 控制台接入：" "Green"
         Write-Color "      $ ssh user@<本机器内网IP地址>" "Yellow"
-        Write-Color " 📺 图形化急救直连：" "Green"
+        Write-Color " [+] 图形化急救直连：" "Green"
         Write-Color "      使用 Remote Desktop 客服端连接该 IP" "Yellow"
     }
     Write-Color "=======================================================" "Cyan"
