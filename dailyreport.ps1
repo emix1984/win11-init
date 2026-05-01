@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Gotify 每日服务器监控推送脚本及安装程序。
 
@@ -8,8 +8,18 @@
 #>
 
 Param(
-    [switch]$Install
+    [switch]$Install,
+    [string]$GotifyUrl = $env:GOTIFY_URL,
+    [string]$Device = $env:GOTIFY_DEVICE
 )
+
+# 提供默认值以便向后兼容
+if ([string]::IsNullOrWhiteSpace($GotifyUrl)) {
+    $GotifyUrl = "https://gotify.lararu.dev/message?token=AnDQOf5fr5BIcaq"
+}
+if ([string]::IsNullOrWhiteSpace($Device)) {
+    $Device = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "Win11lts-envy" }
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -47,8 +57,9 @@ if ($Install) {
     $Repetition = (New-ScheduledTaskTrigger -Once -At "00:00" -RepetitionInterval (New-TimeSpan -Hours 2) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
     $Trigger.Repetition = $Repetition
 
-    # 定义操作：静默运行新位置的 PowerShell 脚本
-    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
+    # 定义操作：静默运行新位置的 PowerShell 脚本，并将当前配置通过参数传入
+    $ArgsStr = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -GotifyUrl `"$GotifyUrl`" -Device `"$Device`""
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ArgsStr
 
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Write-Host "任务 [$TaskName] 已存在，正在覆盖更新..." -ForegroundColor Yellow
@@ -69,8 +80,7 @@ if ($Install) {
 # ==========================================
 
 # --- 配置 ---
-$GotifyUrl = "https://gotify.lararu.dev/message?token=AnDQOf5fr5BIcaq"
-$Device = "Win11lts-envy"
+# $GotifyUrl 和 $Device 现在由 Param 块处理，支持参数和环境变量输入
 
 # --- 1. 获取运行时间 ---
 $Uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime

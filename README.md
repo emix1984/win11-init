@@ -31,6 +31,26 @@
 
 ---
 
+## 🔔 Gotify 监控配置说明
+
+`dailyreport.ps1` 监控脚本已支持动态传参，无需修改代码源码即可配置推送地址与设备标识。您可以通过以下三种方式进行自定义：
+
+1. **环境变量（推荐用于自动化装机）**：
+   在执行部署脚本之前，可以提前设置环境变量。装机脚本在底层调用时会自动读取并将其永久固化至 Windows 定时任务中。
+   ```powershell
+   $env:GOTIFY_URL="https://your.gotify.server/message?token=your_token"
+   $env:GOTIFY_DEVICE="My-Win11-Node"
+   ```
+2. **直接命令行传参**：
+   您也可以完全不依赖装机流，独立运行此脚本并传入参数：
+   ```powershell
+   .\dailyreport.ps1 -Install -GotifyUrl "https://your.gotify/message?token=xxx" -Device "MyNode"
+   ```
+3. **缺省兼容机制**：
+   如果未提供任何参数或环境变量，脚本会自动抓取当前计算机名称（`COMPUTERNAME`）作为设备标识，并使用内置的测试 Token，做到零配置开箱即用。
+
+---
+
 ## 📌 快速开始指南
 
 1. **准备环境**：将本下载目录整个通过 U盘 或云盘打包拷贝至刚装好系统或者是目标 Windows 11 的桌面上。
