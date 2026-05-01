@@ -10,7 +10,7 @@ if (-not $isAdmin) {
         Start-Process powershell -Verb RunAs -ArgumentList $arguments
     } catch {
         Write-Host "提示：提权操作被取消或失败。请按任意键退出..."
-        $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+        # $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
     }
     exit
 }
@@ -383,7 +383,7 @@ function Main {
     Write-Color "=======================================================" "Cyan"
 
     Write-Host "`n长按 Enter 键彻底退出并接管系统..."
-    $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+    # $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
 }
 
 # 挂载点

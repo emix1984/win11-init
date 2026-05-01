@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Gotify 每日服务器监控推送脚本及安装程序。
 
@@ -70,7 +70,7 @@ if ($Install) {
 
 # --- 配置 ---
 $GotifyUrl = "https://gotify.lararu.dev/message?token=AnDQOf5fr5BIcaq"
-$Device = "Win11-SMG"
+$Device = "Win11lts-envy"
 
 # --- 1. 获取运行时间 ---
 $Uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
