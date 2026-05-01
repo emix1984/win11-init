@@ -14,6 +14,9 @@
 # 全局错误追踪标志
 $global:ErrorsFound = $false
 
+# 关闭自带的顶部进度条 UI，防止 Invoke-WebRequest 等命令下载时控制台画面闪现和拖慢速度
+$ProgressPreference = 'SilentlyContinue'
+
 # 打印带颜色的信息
 function Write-Color {
     param([string]$Message, [string]$Color = "White")
@@ -34,7 +37,7 @@ function Install-OpenSSH {
         Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
         
         Write-Color " -> 正在静默安装 OpenSSH..." "Cyan"
-        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -NoNewWindow -PassThru
+        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -WindowStyle Hidden -PassThru
         
         if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
             throw "MSI 安装失败，退出码: $($process.ExitCode)"
