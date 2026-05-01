@@ -1,4 +1,4 @@
-﻿#Requires -RunAsAdministrator
+#Requires -RunAsAdministrator
 
 <#
 .SYNOPSIS
@@ -27,12 +27,22 @@ function Write-Color {
 function Install-OpenSSH {
     Write-Color "`n[1/9] 正在安装 OpenSSH 服务和相关组件..." "Yellow"
     try {
-        $sshState = Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
-        if ($sshState.State -ne 'Installed') {
-            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop | Out-Null
+        $msiUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64-v10.0.0.0.msi"
+        $msiPath = "$env:TEMP\OpenSSH-Win64-v10.0.0.0.msi"
+        
+        Write-Color " -> 正在下载 OpenSSH MSI 安装包..." "Cyan"
+        Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
+        
+        Write-Color " -> 正在静默安装 OpenSSH..." "Cyan"
+        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -NoNewWindow -PassThru
+        
+        if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+            throw "MSI 安装失败，退出码: $($process.ExitCode)"
         }
-        Start-Service sshd -ErrorAction Stop
-        Set-Service -Name sshd -StartupType 'Automatic' -ErrorAction Stop
+
+        # 确保服务启动并设置为自动
+        Start-Service sshd -ErrorAction SilentlyContinue
+        Set-Service -Name sshd -StartupType 'Automatic' -ErrorAction SilentlyContinue
 
         if (!(Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction Stop | Out-Null
