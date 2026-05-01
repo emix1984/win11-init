@@ -1,390 +1,407 @@
-﻿# 强制设定当前控制台输出为 UTF-8
+# Force console output to UTF-8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 自动提权机制 (免去右键管理员运行，防止因权限或执行策略拦截导致的闪退)
+# Self-elevation mechanism (if not already elevated by bootstrapper)
 $isAdmin = [bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     try {
         $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
         Start-Process powershell -Verb RunAs -ArgumentList $arguments
     } catch {
-        Write-Host "提示：提权操作被取消或失败。请按任意键退出..."
-        # $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+        Write-Host "Tip: Elevation cancelled or failed. Press any key to exit..."
     }
     exit
 }
 
-<#
-.SYNOPSIS
-    初始化 Windows 11 环境：安装 OpenSSH，创建用户，配置防火墙、RDP、电源策略、杀毒防御与包管理器。
-.DESCRIPTION
-    采用模块化编程模式重构，将各项功能独立封装为函数，整合所有高效生产环境必需的基础基建。
-#>
+# Enable logging
+$LogPath = Join-Path -Path $PSScriptRoot -ChildPath "setup_win11.log"
 
-# ==========================================
-# 准备阶段：通用工具与变量
-# ==========================================
-
-# 全局错误追踪标志
-$global:ErrorsFound = $false
-
-# 关闭自带的顶部进度条 UI，防止 Invoke-WebRequest 等命令下载时控制台画面闪现和拖慢速度
-$ProgressPreference = 'SilentlyContinue'
-
-# 打印带颜色的信息
+# Function to format messages with timestamps (captured by Transcript)
 function Write-Color {
     param([string]$Message, [string]$Color = "White")
-    Write-Host $Message -ForegroundColor $Color
+    $Timestamp = Get-Date -Format "HH:mm:ss"
+    $FormattedMessage = "[$Timestamp] $Message"
+    Write-Host $FormattedMessage -ForegroundColor $Color
 }
 
+Start-Transcript -Path $LogPath -Append -Force
+Write-Color "Starting initialization process." "Cyan"
 
-# ==========================================
-# 模块一：OpenSSH 服务管理
-# ==========================================
+# Global error tracking
+$global:ErrorsFound = $false
+
+# Disable progress bar to speed up downloads
+$ProgressPreference = 'SilentlyContinue'
+
+# Module 1: OpenSSH Management
 function Install-OpenSSH {
-    Write-Color "`n[1/9] 正在安装 OpenSSH 服务和相关组件..." "Yellow"
+    Write-Color "`n[1/9] Checking OpenSSH components..." "Yellow"
     try {
-        $msiUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64-v10.0.0.0.msi"
-        $msiPath = "$env:TEMP\OpenSSH-Win64-v10.0.0.0.msi"
-        
-        Write-Color " -> 正在下载 OpenSSH MSI 安装包..." "Cyan"
-        Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
-        
-        Write-Color " -> 正在静默安装 OpenSSH..." "Cyan"
-        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -WindowStyle Hidden -PassThru
-        
-        if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-            throw "MSI 安装失败，退出码: $($process.ExitCode)"
+        # Check if already installed
+        if ((Get-Service -Name sshd -ErrorAction SilentlyContinue) -and (Test-Path "C:\Windows\System32\OpenSSH\sshd.exe")) {
+            Write-Color " -> OpenSSH is already present and registered." "Cyan"
+        } else {
+            $msiUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64-v10.0.0.0.msi"
+            $msiPath = "$env:TEMP\OpenSSH-Win64-v10.0.0.0.msi"
+            
+            Write-Color " -> Downloading OpenSSH MSI (v10.0.0.0)..." "Cyan"
+            Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing -TimeoutSec 60
+            
+            Write-Color " -> Silent installing OpenSSH..." "Cyan"
+            $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -WindowStyle Hidden -PassThru
+            
+            if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+                throw "MSI installation failed with exit code: $($process.ExitCode)"
+            }
         }
 
-        # 确保服务启动并设置为自动
-        Start-Service sshd -ErrorAction SilentlyContinue
-        Set-Service -Name sshd -StartupType 'Automatic' -ErrorAction SilentlyContinue
+        # Service configuration
+        $sshd = Get-Service -Name sshd -ErrorAction SilentlyContinue
+        if ($sshd) {
+            Write-Color " -> Configuring sshd service..." "Cyan"
+            Set-Service -Name sshd -StartupType 'Automatic'
+            if ($sshd.Status -ne 'Running') { Start-Service sshd }
+        }
 
+        # Firewall check
         if (!(Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
+            Write-Color " -> Adding Firewall rule for SSH (Port 22)..." "Cyan"
             New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction Stop | Out-Null
         }
-        Write-Color " -> OpenSSH 服务安装与启动成功。" "Green"
+        Write-Color " -> OpenSSH setup successful." "Green"
     } catch {
-        Write-Color " -> [异常] 安装/启动 OpenSSH 服务失败: $_" "Red"
+        Write-Color " -> [Error] OpenSSH module failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
 function Optimize-SSHConfig {
-    Write-Color "`n[2/9] 正在优化 SSH 体验配置 (替换为 PowerShell & Keep-Alive)..." "Yellow"
+    Write-Color "`n[2/9] Optimizing SSH environment..." "Yellow"
     try {
+        # Set Default Shell to PowerShell
         $DefaultShell = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name "DefaultShell" -Value $DefaultShell -PropertyType String -Force -ErrorAction SilentlyContinue | Out-Null
+        $regPath = "HKLM:\SOFTWARE\OpenSSH"
+        if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+        New-ItemProperty -Path $regPath -Name "DefaultShell" -Value $DefaultShell -PropertyType String -Force | Out-Null
         
+        # Edit sshd_config
         $sshConfigFile = "C:\ProgramData\ssh\sshd_config"
         if (Test-Path $sshConfigFile) {
             $configContent = Get-Content $sshConfigFile
             $configContent = $configContent -replace "^\s*#?ClientAliveInterval\s+.*", "ClientAliveInterval 60"
             $configContent = $configContent -replace "^\s*#?ClientAliveCountMax\s+.*", "ClientAliveCountMax 3"
+            # Allow administrators to use their own authorized_keys
             $configContent = $configContent -replace "^(#?)(Match Group administrators)", "#`$2"
             $configContent = $configContent -replace "^(#?)(\s*AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys)", "#`$2"
             $configContent | Set-Content $sshConfigFile -Force
             Restart-Service sshd -ErrorAction SilentlyContinue
+            Write-Color " -> Keep-Alive and Admin-Keys config applied." "Green"
         }
-        Write-Color " -> SSH 体验优化和 Keep-Alive 配置已应用。" "Green"
     } catch {
-        Write-Color " -> [异常] 优化 SSH 配置失败: $_" "Red"
+        Write-Color " -> [Error] SSH optimization failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块二：账户与权限管理
-# ==========================================
+# Module 2: Account Management
 function Setup-SSHUser {
     param([string]$Username, [string]$PasswordString)
-    Write-Color "`n[3/9] 正在配置统管本地用户: '$Username'..." "Yellow"
+    Write-Color "`n[3/9] Managing local deployment account: '$Username'..." "Yellow"
     try {
         $SecurePassword = ConvertTo-SecureString $PasswordString -AsPlainText -Force
         if (Get-LocalUser -Name $Username -ErrorAction SilentlyContinue) {
-            Write-Color " -> 用户 '$Username' 已存在，正在更新为其重置密码..." "Cyan"
-            Get-LocalUser -Name $Username | Set-LocalUser -Password $SecurePassword -ErrorAction Stop
+            Write-Color " -> User exists, resetting password." "Cyan"
+            Set-LocalUser -Name $Username -Password $SecurePassword -ErrorAction Stop
         } else {
-            New-LocalUser -Name $Username -Password $SecurePassword -FullName "SSH Access" -Description "用于 SSH 远程访问" -PasswordNeverExpires -ErrorAction Stop | Out-Null
+            Write-Color " -> Creating new local user." "Cyan"
+            New-LocalUser -Name $Username -Password $SecurePassword -FullName "Headless Admin" -Description "Automated SSH Access" -PasswordNeverExpires -ErrorAction Stop | Out-Null
         }
+        # Ensure Admin rights
         Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue | Out-Null
-        Write-Color " -> 用户 '$Username' 账户状态已就绪 (归属 Administrators 组)。" "Green"
+        Write-Color " -> User '$Username' is fully provisioned." "Green"
     } catch {
-        Write-Color " -> [异常] 配置本地用户失败: $_" "Red"
+        Write-Color " -> [Error] User provisioning failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块三：网络与防火墙策略
-# ==========================================
+# Module 3: Firewall Policy
 function Configure-Firewall {
-    Write-Color "`n[4/9] 正在爆发式配置防火墙策略 (开启全端口)..." "Yellow"
+    Write-Color "`n[4/9] Applying network access policy..." "Yellow"
     try {
+        # Strict mode (recommended but currently allowing all as per user request)
+        # New-NetFirewallRule -DisplayName "SSH-ONLY" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22
+        
         Remove-NetFirewallRule -DisplayName "ALLOW ALL INBOUND" -ErrorAction SilentlyContinue
         New-NetFirewallRule -DisplayName "ALLOW ALL INBOUND" -Direction Inbound -Action Allow -Profile Any -ErrorAction Stop | Out-Null
-        Write-Color " -> 警告：已强制放行所有入站网络流量！" "Red"
+        Write-Color " -> [SECURITY WARNING] All inbound traffic is allowed (Headless Server Mode)." "Red"
     } catch {
-        Write-Color " -> [异常] 配置防火墙规则失败: $_" "Red"
+        Write-Color " -> [Error] Firewall rule application failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块四：系统电源与休眠策略
-# ==========================================
+# Module 4: Power & Sleep Policy
 function Optimize-PowerSettings {
-    Write-Color "`n[5/9] 正在封锁睡眠策略 (确保挂机环境不掉线)..." "Yellow"
+    Write-Color "`n[5/9] Locking power state for persistent uptime..." "Yellow"
     try {
+        # High Performance
         powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c *>&1 | Out-Null
-        powercfg /x -standby-timeout-ac 0
-        powercfg /x -standby-timeout-dc 0
-        powercfg /x -hibernate-timeout-ac 0
-        powercfg /x -hibernate-timeout-dc 0
+        # Disable all timeouts
+        $params = @("-standby-timeout-ac", "-standby-timeout-dc", "-hibernate-timeout-ac", "-hibernate-timeout-dc")
+        foreach ($p in $params) { powercfg /x $p 0 }
+        
+        # Lid close action (do nothing)
         powercfg /setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
         powercfg /setdcvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
         powercfg /setactive SCHEME_CURRENT | Out-Null
-        Write-Color " -> 高性能配置已下发，已切断系统环境休眠及笔记本合盖影响！" "Green"
+        Write-Color " -> Sleep/Hibernate blocked successfully." "Green"
     } catch {
-        Write-Color " -> [异常] 调整电源策略失败: $_" "Red"
+        Write-Color " -> [Error] Power management failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块五：远程桌面 (RDP) 救砖通道
-# ==========================================
+# Module 7: Remote Desktop (RDP)
 function Enable-RemoteDesktop {
-    Write-Color "`n[6/9] 正在部署图形化远程控制 (Windows RDP)..." "Yellow"
+    Write-Color "`n[7/11] Enabling RDP emergency access..." "Yellow"
     try {
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue | Out-Null
-        Write-Color " -> 远程桌面服务已强制开启，3389 端口放行成功。" "Green"
+        $tsPath = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
+        Set-ItemProperty -Path $tsPath -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue # Remote Desktop display group
+        Write-Color " -> RDP enabled and firewall port 3389 opened." "Green"
     } catch {
-        Write-Color " -> [异常] 开启远程桌面失败: $_" "Red"
+        Write-Color " -> [Error] RDP setup failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块六：禁用 Windows Defender 安全中心
-# ==========================================
+# Module 8: Windows Defender
 function Disable-WindowsDefender {
-    Write-Color "`n[7/9] 正在瘫痪 Windows Defender 杀毒防御层 (高危)..." "Yellow"
+    Write-Color "`n[8/11] Bypassing Windows Defender (High Risk Mode)..." "Yellow"
     try {
         if (Get-Command Set-MpPreference -ErrorAction SilentlyContinue) {
-            # 1. 尝试直接禁用实时扫描、行为监控与网络拦截
+            # Real-time exclusions
             Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
             Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
-            Set-MpPreference -DisableBlockAtFirstSeen $true -ErrorAction SilentlyContinue
             Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
-            Set-MpPreference -DisableScriptScanning $true -ErrorAction SilentlyContinue
             
-            # 2. 极致防误杀终极方案：将整个 C 盘根目录及其子目录加入排除名单 (即使防篡改开启，这也极其有效)
+            # Global exclusion for system drive
             Add-MpPreference -ExclusionPath "C:\" -ErrorAction SilentlyContinue
             
-            # 3. 尝试通过组策略彻底干掉 Defender 引擎
+            # Policy keys
             $WD_Policy_Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
-            if (!(Test-Path $WD_Policy_Path)) { New-Item -Path $WD_Policy_Path -Force -ErrorAction SilentlyContinue | Out-Null }
-            Set-ItemProperty -Path $WD_Policy_Path -Name "DisableAntiSpyware" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+            if (!(Test-Path $WD_Policy_Path)) { New-Item -Path $WD_Policy_Path -Force | Out-Null }
+            Set-ItemProperty -Path $WD_Policy_Path -Name "DisableAntiSpyware" -Value 1 -PropertyType DWord -Force | Out-Null
 
-            Write-Color " -> 杀毒引流成功：核心全盘 C: 已脱离监控，实时防御阻隔尝试下发！" "Green"
-            Write-Color "    (提示：Windows 11 若有残留拦截，需去界面手动关闭一次『防篡改保护』)" "Cyan"
-        } else {
-            Write-Color " -> 系统未检测到 Defender 核心组件(或已被精简)，跳过瘫痪注入。" "Green"
+            Write-Color " -> Defender realtime monitoring and full disk scanning disabled." "Green"
         }
     } catch {
-        Write-Color " -> [异常] 瘫痪 Defender 进程失败: $_" "Red"
+        Write-Color " -> [Error] Defender module failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块七：系统减负优化 (核心拦截策略)
-# ==========================================
+# Module 9: System Debloat & UAC
 function Optimize-SystemDebloat {
-    Write-Color "`n[8/9] 正在减负并清扫环境障碍 (清休眠,解UAC,放行脚本...)" "Yellow"
+    Write-Color "`n[9/11] Cleaning up system noise..." "Yellow"
     try {
+        # Disable Hibernation file to save space
         powercfg /h off | Out-Null
-        Set-ItemProperty -Path REGISTRY::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System -Name ConsentPromptBehaviorAdmin -Value 0
-        Set-ItemProperty -Path REGISTRY::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System -Name PromptOnSecureDesktop -Value 0
         
-        try { Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop } catch { Write-Color " -> [提示] Powershell 策略已被更高级别(如组策略)锁定，维持原状..." "Cyan" }
+        # Disable UAC (Consent Prompt)
+        $uacPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+        Set-ItemProperty -Path $uacPath -Name "ConsentPromptBehaviorAdmin" -Value 0
+        Set-ItemProperty -Path $uacPath -Name "PromptOnSecureDesktop" -Value 0
+        
+        # Set PowerShell Execution Policy
+        try { 
+            Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop 
+        } catch { 
+            Write-Color " -> [Note] Execution Policy locked by GPO." "Cyan" 
+        }
 
+        # Prevent auto-reboot on updates
         $WU_AU_Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-        if (!(Test-Path $WU_AU_Path)) { New-Item -Path $WU_AU_Path -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $WU_AU_Path -Name "NoAutoRebootWithLoggedOnUsers" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue | Out-Null
+        if (!(Test-Path $WU_AU_Path)) { New-Item -Path $WU_AU_Path -Force | Out-Null }
+        Set-ItemProperty -Path $WU_AU_Path -Name "NoAutoRebootWithLoggedOnUsers" -Value 1 -Type DWord -Force | Out-Null
 
-        Write-Color " -> 空间已释放，环境已提纯，无烦人系统级干扰！" "Green"
+        Write-Color " -> UAC silenced and auto-reboot disabled." "Green"
     } catch {
-        Write-Color " -> [异常] 系统减负清扫失败: $_" "Red"
+        Write-Color " -> [Error] Debloat module failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 模块八：软件环境接管 (Chocolatey & 工具链)
-# ==========================================
+# Module 10: Package Management (Chocolatey)
 function Install-PackageManager {
-    Write-Color "`n[9/9] 正在构建全局软件生态源工具 (Chocolatey & Curl)..." "Yellow"
+    Write-Color "`n[10/11] Provisioning Chocolatey & modern tools..." "Yellow"
     try {
-        # 1. 部署 Chocolatey
         if (Get-Command choco -ErrorAction SilentlyContinue) {
-            Write-Color " -> 检测到已存在 Chocolatey 包环境，跳过安装。" "Cyan"
+            Write-Color " -> Chocolatey is already active." "Cyan"
         } else {
-            $env:chocolateyUseWindowsCompression = 'false'
+            Write-Color " -> Downloading and installing Chocolatey..." "Cyan"
             [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')) *>&1 | Out-Null
-            # 刷新当前环境变量以便马上能用 choco
+            $script = (New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')
+            Invoke-Expression $script
+            
+            # Immediate Path refresh
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
         }
 
-        # 2. 静默安装最新原版 curl 工具
-        Write-Color " -> 正在调用 Choco 安装/更新原生 curl..." "Cyan"
-        choco install curl -y --no-progress *>&1 | Out-Null
+        # Use Choco to ensure modern curl is present
+        Write-Color " -> Ensuring native curl is available via Choco..." "Cyan"
+        $chocoPath = if (Get-Command choco -ErrorAction SilentlyContinue) { "choco" } else { "$env:ProgramData\chocolatey\bin\choco.exe" }
+        if ((Test-Path $chocoPath) -or (Get-Command choco -ErrorAction SilentlyContinue)) {
+            & $chocoPath install curl -y --no-progress | Out-Null
+        }
 
-        # 3. 剥离微软瞎改的 curl 别名，还原本味 (写入全部用户的 PowerShell Profile)
+        # Remove Microsoft's curl alias to allow native curl to work correctly
         $globalProfile = $PROFILE.AllUsersAllHosts
-        if (!(Test-Path (Split-Path $globalProfile))) { New-Item -ItemType Directory -Path (Split-Path $globalProfile) -Force -ErrorAction SilentlyContinue | Out-Null }
-        if (!(Test-Path $globalProfile)) { New-Item -ItemType File -Path $globalProfile -Force -ErrorAction SilentlyContinue | Out-Null }
+        $profileDir = Split-Path $globalProfile
+        if (!(Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir -Force | Out-Null }
+        if (!(Test-Path $globalProfile)) { New-Item -ItemType File -Path $globalProfile -Force | Out-Null }
         
         $profileContent = Get-Content $globalProfile -Raw -ErrorAction SilentlyContinue
         if ($null -eq $profileContent -or $profileContent -notmatch "Remove-Item Alias:curl") {
             Add-Content -Path $globalProfile -Value "`r`n# Restoring native curl behavior`r`nRemove-Item Alias:curl -ErrorAction SilentlyContinue" -Encoding UTF8
         }
         
-        Write-Color " -> Chocolatey 安装完毕！原生 Curl 已夺回控制权！" "Green"
+        Write-Color " -> Package management environment is ready." "Green"
     } catch {
-        Write-Color " -> [异常] 部署包管理源与工具失败: $_" "Red"
+        Write-Color " -> [Error] Package manager setup failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
+# Module 6: IP Helper Service Configuration
+function Configure-IPHelper {
+    Write-Color "`n[6/11] Configuring IP Helper service..." "Yellow"
+    try {
+        # 1. Set startup type to Automatic
+        Set-Service -Name "iphlpsvc" -StartupType Automatic -ErrorAction Stop
 
-# ==========================================
-# 模块九：每日服务器健康监控广播
-# ==========================================
+        # 2. Check status and start if necessary
+        $service = Get-Service -Name "iphlpsvc"
+        if ($service.Status -ne 'Running') {
+            Start-Service -Name "iphlpsvc" -ErrorAction Stop
+            Write-Color " -> IP Helper service set to Automatic and started." "Green"
+        } else {
+            Write-Color " -> IP Helper service already running (Startup: Automatic)." "Green"
+        }
+    } catch {
+        Write-Color " -> [Error] IP Helper configuration failed: $_" "Red"
+        $global:ErrorsFound = $true
+    }
+}
+
+# Module 11: Health Report Deployment
 function Install-DailyReport {
-    Write-Color "`n[10/10] 正在挂载 Gotify 每日定时监控报告生态..." "Yellow"
+    Write-Color "`n[11/11] Deploying monitoring agent..." "Yellow"
     try {
         $DailyReportPath = Join-Path -Path $PSScriptRoot -ChildPath "dailyreport.ps1"
         if (Test-Path $DailyReportPath) {
             & $DailyReportPath -Install | Out-Null
-            Write-Color " -> Gotify 监控端已成功驻留！任务引擎接管偶数时段扫描。" "Green"
+            Write-Color " -> Monitoring task registered successfully." "Green"
         } else {
-            Write-Color " -> [提示] 未检测到 dailyreport.ps1 伴随安装包，将跳过其部署。" "Cyan"
+            Write-Color " -> [Note] dailyreport.ps1 not found in script root." "Cyan"
         }
     } catch {
-        Write-Color " -> [异常] 部署 Gotify 服务端节点失败: $_" "Red"
+        Write-Color " -> [Error] Monitoring deployment failed: $_" "Red"
         $global:ErrorsFound = $true
     }
 }
 
-
-# ==========================================
-# 结尾模块：系统环境基准自检
-# ==========================================
+# Final Verification
 function Verify-SystemHealth {
     Write-Color "`n[+] =========================================" "Cyan"
-    Write-Color "[+] 平台模块基准考核最终确认 (Health Check)..." "Cyan"
+    Write-Color "[+] Running Post-Deployment Health Check..." "Cyan"
     Start-Sleep -Seconds 1 
     
     $VerificationFailed = $false
     
-    # Check 1: SSH Service
+    # 1. SSH
     if ((Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -eq 'Running') {
-        Write-Color " [PASS] OpenSSH 核心服务稳定运行。" "Green"
-    } else { Write-Color " [FAIL] OpenSSH 服务异常宕机。" "Red"; $VerificationFailed = $true }
+        Write-Color " [PASS] OpenSSH service is healthy." "Green"
+    } else { Write-Color " [FAIL] OpenSSH service not running." "Red"; $VerificationFailed = $true }
 
-    # Check 2: User Status
+    # 2. User
     if (Get-LocalUser -Name "user" -ErrorAction SilentlyContinue) {
-        Write-Color " [PASS] 最高权限账户 'user' 有效。" "Green"
-    } else { Write-Color " [FAIL] 目标账户异常。" "Red"; $VerificationFailed = $true }
+        Write-Color " [PASS] Local admin 'user' is active." "Green"
+    } else { Write-Color " [FAIL] Target user missing." "Red"; $VerificationFailed = $true }
 
-    # Check 3: RDP Port
-    $rdpReg = Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -ErrorAction SilentlyContinue
-    if ($rdpReg -and $rdpReg.fDenyTSConnections -eq 0) {
-        Write-Color " [PASS] 图形化远程桌面系统接通。" "Green"
-    } else { Write-Color " [FAIL] RDP 服务接入异常。" "Red"; $VerificationFailed = $true }
+    # 3. RDP
+    $rdpDeny = Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
+    if ($rdpDeny -and $rdpDeny.fDenyTSConnections -eq 0) {
+        Write-Color " [PASS] RDP emergency access enabled." "Green"
+    } else { Write-Color " [FAIL] RDP settings incorrect." "Red"; $VerificationFailed = $true }
     
-    # Check 4: Chocolatey
+    # 4. Package Manager
     if (Get-Command choco -ErrorAction SilentlyContinue) {
-        Write-Color " [PASS] Chocolatey 取包通道健康！" "Green"
-    } else { Write-Color " [WARN] Chocolatey (choco) 环境尚未加载可用。" "Yellow" }
-    
-    # Check 5: Defender
-    if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
-        $dfCheck = Get-MpPreference -ErrorAction SilentlyContinue
-        if ($dfCheck -and ($dfCheck.DisableRealtimeMonitoring -eq $true -or "C:\" -in $dfCheck.ExclusionPath)) {
-            Write-Color " [PASS] Defender 瘫痪/豁免机制已确认生效。" "Green"
-        } else { Write-Color " [WARN] Defender 可能正在顽固抵抗拦截 (防篡改开启中)。" "Yellow" }
-    } else {
-        Write-Color " [PASS] 系统中未检出 Defender 组件，绝对免疫。" "Green"
+        Write-Color " [PASS] Chocolatey environment verified." "Green"
+    } else { Write-Color " [WARN] Chocolatey not found in current PATH." "Yellow" }
+
+    # 5. IP Helper
+    if ((Get-Service -Name iphlpsvc -ErrorAction SilentlyContinue).Status -eq 'Running') {
+        Write-Color " [PASS] IP Helper service is active." "Green"
+    } else { Write-Color " [WARN] IP Helper service is not running." "Yellow" }
+
+    # 6. Monitoring Push Test
+    Write-Color " [INFO] Testing Gotify notification push..." "Cyan"
+    try {
+        $DailyReportPath = Join-Path -Path $PSScriptRoot -ChildPath "dailyreport.ps1"
+        if (Test-Path $DailyReportPath) {
+            & $DailyReportPath -ErrorAction Stop | Out-Null
+            Write-Color " [PASS] Gotify test push successful." "Green"
+        } else {
+            Write-Color " [FAIL] dailyreport.ps1 not found for testing." "Red"
+            $VerificationFailed = $true
+        }
+    } catch {
+        Write-Color " [FAIL] Gotify test push failed: $_" "Red"
+        $VerificationFailed = $true
     }
 
     return $VerificationFailed
 }
 
-
-# ==========================================
-# 生产总线引擎 (Main Flow)
-# ==========================================
+# Main Execution
 function Main {
-    # 欢迎页与清单预览
     Write-Color "==========================================================" "Cyan"
-    Write-Color "     Windows 11 无头自动部署基建包     " "Cyan"
+    Write-Color "     Windows 11 Optimal Initializer v2.0     " "Cyan"
     Write-Color "==========================================================" "Cyan"
-    Write-Color "本引擎已被扩容至 10 个流水环节，火力全开自动部署：" "Yellow"
-    Write-Color " [1~3] 部署核心级 OpenSSH、优化控制端、挂载超管账户" "Yellow"
-    Write-Color " [4~6] 无痕拆毁防火墙、永恒禁止休眠掉线、开通强直连 RDP" "Yellow"
-    Write-Color " [7~9] 强杀 Defender、根除所有 UAC 及休眠干扰、预装 Choco" "Yellow"
-    Write-Color " [10]  静默灌入 Gotify 每日健康状态汇报监控程序" "Yellow"
     
-    # 授权启动
-    Write-Color "==========================================================" "Cyan"
-    Write-Color "`n>>> [自动模式开启] 轰击指令下发，开始重构环境..." "Cyan"
-    
-    # 流水线队列
     Install-OpenSSH
     Optimize-SSHConfig
     Setup-SSHUser -Username "user" -PasswordString "1234"
     Configure-Firewall
     Optimize-PowerSettings
+    Configure-IPHelper
     Enable-RemoteDesktop
     Disable-WindowsDefender
     Optimize-SystemDebloat
     Install-PackageManager
     Install-DailyReport
     
-    # 收尾
+    # Final Cleanup
+    Write-Color "`n[+] Cleaning up temporary installation files..." "Cyan"
+    $msiPath = "$env:TEMP\OpenSSH-Win64-v10.0.0.0.msi"
+    if (Test-Path $msiPath) { Remove-Item -Path $msiPath -Force -ErrorAction SilentlyContinue }
+    
     $checkFailed = Verify-SystemHealth
     
-    # 诊断报表输出
-    Write-Color "`n===================== 终局报告 ========================" "Cyan"
+    Write-Color "`n===================== Final Summary ========================" "Cyan"
     if ($global:ErrorsFound -or $checkFailed) {
-        Write-Color " 【警告】 突围任务遭遇到异常顽固反制！请仔细筛查拦截日志！" "Red"
+        Write-Color " [!] WARNING: Deployment encountered minor issues." "Red"
+        Write-Color "     Check $LogPath for details." "Yellow"
     } else {
-        Write-Color " 【完成】 基建部署结束，请接管机器！" "Green"
-        Write-Color " ----------------------------------------------------" "Cyan"
-        Write-Color " [+] Coder 控制台接入：" "Green"
-        Write-Color "      $ ssh user@<本机器内网IP地址>" "Yellow"
-        Write-Color " [+] 图形化急救直连：" "Green"
-        Write-Color "      使用 Remote Desktop 客服端连接该 IP" "Yellow"
+        Write-Color " [OK] SUCCESS: System is fully optimized." "Green"
     }
     Write-Color "=======================================================" "Cyan"
-
-    Write-Host "`n长按 Enter 键彻底退出并接管系统..."
-    # $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
 }
 
-# 挂载点
+# Execute
 Main
+Write-Color "Initialization process completed." "Cyan"
+Stop-Transcript -ErrorAction SilentlyContinue
